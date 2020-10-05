@@ -1,0 +1,18 @@
+/*
+ * Copyright (c) 2020 Thomas Le Roux <thomas.leroux@smile.fr>
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+&stmod_usart {
+	current-speed = <115200>;
+	status = "okay";
+
+    // Pin du bus déjà renseignées cf pinmux                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
+	mb1329_bg96 {
+		compatible = "st,mb1329_bg96";
+		label = "stm-mb1329-bg96";
+		status = "okay"; 
+	};
+};
+                  

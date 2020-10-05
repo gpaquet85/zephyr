@@ -1,0 +1,5 @@
+# Copyright (c) 2020 Thomas Le Roux <thomas.leroux@smile.fr>, SMILE
+# SPDX-License-Identifier: Apache-2.0
+
+config SHIELD_MB1329_BG96
+	def_bool $(shields_list_contains,mb1329_bg96)
