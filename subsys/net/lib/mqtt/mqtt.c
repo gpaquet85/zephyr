@@ -50,7 +50,7 @@ static void client_disconnect(struct mqtt_client *client, int result,
 			      bool notify)
 {
 	int err_code;
-
+	
 	err_code = mqtt_transport_disconnect(client);
 	if (err_code < 0) {
 		MQTT_ERR("Failed to disconnect transport!");
@@ -111,8 +111,8 @@ error:
 
 static int client_read(struct mqtt_client *client)
 {
-	int err_code;
 
+	int err_code;
 	if (client->internal.remaining_payload > 0) {
 		return -EBUSY;
 	}
@@ -212,6 +212,7 @@ int mqtt_connect(struct mqtt_client *client)
 
 	if ((client->tx_buf == NULL) || (client->rx_buf == NULL)) {
 		err_code = -ENOMEM;
+
 		goto error;
 	}
 
@@ -463,7 +464,7 @@ int mqtt_disconnect(struct mqtt_client *client)
 	if (err_code < 0) {
 		goto error;
 	}
-
+	
 	client_disconnect(client, 0, true);
 
 error:

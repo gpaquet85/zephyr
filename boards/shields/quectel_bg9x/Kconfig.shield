@@ -1,0 +1,5 @@
+# Copyright (c) 2019 Linaro Limited
+# SPDX-License-Identifier: Apache-2.0
+
+config SHIELD_QUECTEL_BG9X
+	def_bool $(shields_list_contains,quectel_bg9x)

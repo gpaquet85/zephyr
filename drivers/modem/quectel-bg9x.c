@@ -17,6 +17,8 @@ static struct modem_data       mdata;
 static struct modem_context    mctx;
 static const struct socket_op_vtable offload_socket_fd_op_vtable;
 
+struct k_sem qird_resp_sem;
+
 static K_KERNEL_STACK_DEFINE(modem_rx_stack, CONFIG_MODEM_QUECTEL_BG9X_RX_STACK_SIZE);
 static K_KERNEL_STACK_DEFINE(modem_workq_stack, CONFIG_MODEM_QUECTEL_BG9X_RX_WORKQ_STACK_SIZE);
 NET_BUF_POOL_DEFINE(mdm_recv_pool, MDM_RECV_MAX_BUF, MDM_RECV_BUF_SIZE, 0, NULL);
@@ -188,8 +190,14 @@ static int on_cmd_sockread_common(int socket_fd,
 
 	ret = net_buf_linearize(sock_data->recv_buf, sock_data->recv_buf_len,
 				data->rx_buf, 0, (uint16_t)socket_data_length);
+
 	data->rx_buf = net_buf_skip(data->rx_buf, ret);
+
+
 	sock_data->recv_read_len = ret;
+
+	k_sem_give(&qird_resp_sem);
+
 	if (ret != socket_data_length) {
 		LOG_ERR("Total copied data is different then received data!"
 			" copied:%d vs. received:%d", ret, socket_data_length);
@@ -400,11 +408,43 @@ MODEM_CMD_DEFINE(on_cmd_sock_readdata)
 	return on_cmd_sockread_common(mdata.sock_fd, data, len);
 }
 
-/* Handler: Data receive indication. */
+/* Callback for the AT+QIRD:<>,<> that retrieves the received data. */
+static const struct modem_cmd readdata_qird_cmd = MODEM_CMD("+QIRD: ", on_cmd_sock_readdata, 1U, "");
+
+/* Handler: +QIRD: <total_receive_length>[0], <have_read_length>[1], <unread_length[2]> ; Length values for data received. */
+MODEM_CMD_DEFINE(on_cmd_unsol_qird)
+{
+	int total_receive_length = ATOI(argv[0],0,"total_receive");
+	int have_read_length = ATOI(argv[1],0,"have_read_length");
+	int unread_length = ATOI(argv[2],0,"unread_length");
+	int ret;
+
+	struct modem_socket *sock;
+	sock = modem_socket_from_fd(&mdata.socket_config, mdata.sock_fd);
+
+	/* Data ready indication. */
+	ret = modem_socket_packet_size_update(&mdata.socket_config, sock,
+					      unread_length);
+	if (ret < 0) {
+		LOG_ERR("socket_id:%d left_bytes:%d err: %d", 0,
+			total_receive_length, ret);
+	}
+
+	if (total_receive_length > 0) {
+		modem_socket_data_ready(&mdata.socket_config, sock);
+	}
+
+	return 0;
+}
+
+/* Callback for the AT+QIRD:<>,<> which gives useful length values for received data */
+static const struct modem_cmd unsol_qird_cmd = MODEM_CMD("+QIRD: ", on_cmd_unsol_qird, 3U, ",");
+
+/* Handler: +QIURC: "recv",<connectID>[0] ; Data receive indication. */
 MODEM_CMD_DEFINE(on_cmd_unsol_recv)
 {
 	struct modem_socket *sock;
-	int		     sock_fd;
+	int	sock_fd, ret;
 
 	sock_fd = ATOI(argv[0], 0, "sock_fd");
 
@@ -414,12 +454,22 @@ MODEM_CMD_DEFINE(on_cmd_unsol_recv)
 		return 0;
 	}
 
-	/* Data ready indication. */
-	LOG_INF("Data Receive Indication for socket: %d", sock_fd);
-	modem_socket_data_ready(&mdata.socket_config, sock);
+	/* AT+QIRD=<connectID>,0 is sent in order to query the retrieved data's length. */
+	char send_cmd[sizeof("AT+QIRD=##,#")]={0};
+	snprintk(send_cmd,sizeof(send_cmd),"AT+QIRD=%d,%d",sock_fd,0);
+
+
+	/* Because this is a callback, there is no premption possible to give a semaphore. Therefore, we need to use send_nolock and to update the handler commands to what we need. */
+	ret = modem_cmd_send_nolock(&mctx.iface, &mctx.cmd_handler,
+			     NULL, 0U, send_cmd, NULL, K_NO_WAIT);
+	ret = modem_cmd_handler_update_cmds(&mdata.cmd_handler_data, &unsol_qird_cmd,  1U, true);
 
 	return 0;
 }
+
+
+
+
 
 /* Handler: Socket Close Indication. */
 MODEM_CMD_DEFINE(on_cmd_unsol_close)
@@ -585,13 +635,11 @@ static ssize_t offload_recvfrom(void *obj, void *buf, size_t len,
 				int flags, struct sockaddr *from,
 				socklen_t *fromlen)
 {
+
 	struct modem_socket *sock = (struct modem_socket *)obj;
 	char   sendbuf[sizeof("AT+QIRD=##,####")] = {0};
 	int    ret;
 	struct socket_read_data sock_data;
-
-	/* Modem command to read the data. */
-	struct modem_cmd data_cmd[] = { MODEM_CMD("+QIRD: ", on_cmd_sock_readdata, 0U, "") };
 
 	if (!buf || len == 0) {
 		errno = EINVAL;
@@ -613,10 +661,13 @@ static ssize_t offload_recvfrom(void *obj, void *buf, size_t len,
 	sock->data	       = &sock_data;
 	mdata.sock_fd	       = sock->sock_fd;
 
+	k_sem_reset(&qird_resp_sem);
+
 	/* Tell the modem to give us data (AT+QIRD=sock_fd,data_len). */
 	ret = modem_cmd_send(&mctx.iface, &mctx.cmd_handler,
-			     data_cmd, ARRAY_SIZE(data_cmd), sendbuf, &mdata.sem_response,
+			     &readdata_qird_cmd, 1U, sendbuf, &qird_resp_sem,
 			     MDM_CMD_TIMEOUT);
+
 	if (ret < 0) {
 		errno = -ret;
 		ret = -1;
@@ -636,6 +687,7 @@ static ssize_t offload_recvfrom(void *obj, void *buf, size_t len,
 exit:
 	/* clear socket data */
 	sock->data = NULL;
+
 	return ret;
 }
 
@@ -720,7 +772,7 @@ static int offload_connect(void *obj, const struct sockaddr *addr,
 {
 	struct modem_socket *sock     = (struct modem_socket *) obj;
 	uint16_t	    dst_port  = 0;
-	char		    *protocol = "TCP";
+	char		    *protocol = "UDP";
 	struct modem_cmd    cmd[]     = { MODEM_CMD("+QIOPEN: ", on_cmd_atcmdinfo_sockopen, 2U, ",") };
 	char		    buf[sizeof("AT+QIOPEN=#,##,###,####.####.####.####,######")] = {0};
 	int		    ret;
@@ -939,11 +991,12 @@ static const struct modem_cmd response_cmds[] = {
 static const struct modem_cmd unsol_cmds[] = {
 	MODEM_CMD("+QIURC: \"recv\",",	   on_cmd_unsol_recv,  1U, ""),
 	MODEM_CMD("+QIURC: \"closed\",",   on_cmd_unsol_close, 1U, ""),
+	MODEM_CMD("+QIOPEN: ", on_cmd_atcmdinfo_sockopen, 2U, ","),
 };
 
 /* Commands sent to the modem to set it up at boot time. */
 static const struct setup_cmd setup_cmds[] = {
-	SETUP_CMD_NOHANDLE("ATE0"),
+	SETUP_CMD_NOHANDLE("ATE1"),
 	SETUP_CMD_NOHANDLE("ATH"),
 	SETUP_CMD_NOHANDLE("AT+CMEE=1"),
 
@@ -967,7 +1020,9 @@ static const struct setup_cmd setup_cmds[] = {
 static int modem_setup(void)
 {
 	int ret = 0, counter;
-	int rssi_retry_count = 0, init_retry_count = 0;
+	int rssi_retry_count = 0, init_retry_count = 0, pdp_act_retry_count = 0;
+
+	k_sem_init(&qird_resp_sem,0,1);
 
 	/* Setup the pins to ensure that Modem is enabled. */
 	pin_init();
@@ -1035,8 +1090,28 @@ restart_rssi:
 			     NULL, 0U, "AT+QIACT=1", &mdata.sem_response,
 			     MDM_CMD_TIMEOUT);
 
-	/* Retry or Possibly Exit. */
-	if (ret < 0 && init_retry_count++ < MDM_INIT_RETRY_COUNT) {
+	/* If there is trouble opening the PDP context, we try to deactivate/reactive it 3 times. */
+	while (ret == -EIO && pdp_act_retry_count < MDM_PDP_ACT_RETRY_COUNT) {
+
+		modem_cmd_send(&mctx.iface, &mctx.cmd_handler,
+			     NULL, 0U, "AT+QIDEACT=1", &mdata.sem_response,
+			     MDM_CMD_TIMEOUT);
+
+		/* If there's an error for the AT+QIDEACT, restart the module. */
+		if (ret < 0) {
+			goto restart;
+		}
+
+		ret = modem_cmd_send(&mctx.iface, &mctx.cmd_handler,
+			     NULL, 0U, "AT+QIACT=1", &mdata.sem_response,
+			     MDM_CMD_TIMEOUT);
+		pdp_act_retry_count++;
+	}
+
+	/* Retry or Possibly Exit if there's 3 consecutive failures. */
+	if ((ret < 0 && init_retry_count++ < MDM_INIT_RETRY_COUNT) ||
+		(pdp_act_retry_count >= MDM_PDP_ACT_RETRY_COUNT)) {
+		pdp_act_retry_count = 0;
 		goto restart;
 	}
 

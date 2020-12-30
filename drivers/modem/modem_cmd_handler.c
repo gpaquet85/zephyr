@@ -45,6 +45,34 @@ static void skipcrlf(struct modem_cmd_handler_data *data)
 	}
 }
 
+
+/*
+		Algo initial :
+		frag : passé en paramètre ; portion de buffer
+		offset : passé en param ; à remplir
+		buf : buffer actuel avec la data
+		len : longueur
+		pos : position
+
+		Tant que le caractère étudié est pas un cr ou un lf
+			Si on dépasse la taille du buffer 
+				traitement
+			Sinon pos augmente et on avance
+		
+		On a trouvé un cr ou un lf -> on sort et on rentre dans le test
+			pos vaut la position précise du cr ou lf
+
+		Dans le cas où on est sorti du while, si c'est parce qu'on a trouvé un c ou un lf
+		on met dans len la position à laquelle on sort, on gère au cas où dépassement offset et buffer
+		et on sort avec len -> On renvoit a position où l'on a le cr ou lf.
+		*/
+
+		/*
+		Dans notre cas, on veut capter un deuxième groupe de crlf et renvoyer ici.
+		Pour ce faire, on peut incrémenter position de 2 (éviter de passer par le lf juste
+		derrière) et refaire une recherche. La sortie sera similaire.
+
+		*/
 static uint16_t findcrlf(struct modem_cmd_handler_data *data,
 		      struct net_buf **frag, uint16_t *offset)
 {
@@ -223,12 +251,13 @@ static const struct modem_cmd *find_cmd_match(
 		}
 
 		for (i = 0; i < data->cmds_len[j]; i++) {
+			
 			/* match on "empty" cmd */
 			if (strlen(data->cmds[j][i].cmd) == 0 ||
 			    strncmp(data->match_buf, data->cmds[j][i].cmd,
 				    data->cmds[j][i].cmd_len) == 0) {
 				return &data->cmds[j][i];
-			}
+			}	
 		}
 	}
 
@@ -365,6 +394,7 @@ static void cmd_handler_process_rx_buf(struct modem_cmd_handler_data *data)
 		k_sem_take(&data->sem_parse_lock, K_FOREVER);
 
 		cmd = find_cmd_match(data);
+
 		if (cmd) {
 			LOG_DBG("match cmd [%s] (len:%u)",
 				log_strdup(cmd->cmd), match_len);
@@ -496,6 +526,7 @@ static int _modem_cmd_send(struct modem_iface *iface,
 
 	ret = modem_cmd_handler_update_cmds(data, handler_cmds,
 					    handler_cmds_len, true);
+
 	if (ret < 0) {
 		goto unlock_tx_lock;
 	}
@@ -538,7 +569,6 @@ unlock_tx_lock:
 	if (!no_tx_lock) {
 		k_sem_give(&data->sem_tx_lock);
 	}
-
 	return ret;
 }
 

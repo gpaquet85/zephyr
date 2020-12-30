@@ -7,3 +7,4 @@ project(mqtt_publisher)
 
 FILE(GLOB app_sources src/*.c)
 target_sources(app PRIVATE ${app_sources})
+set(SHIELD quectel_bg9x)
