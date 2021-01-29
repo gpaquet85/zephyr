@@ -12,13 +12,15 @@ LOG_MODULE_REGISTER(modem_quectel_bg9x, CONFIG_MODEM_LOG_LEVEL);
 #include "quectel-bg9x.h"
 
 static struct k_thread	       modem_rx_thread;
-static struct k_work_q	       modem_workq;
 static struct modem_data       mdata;
 static struct modem_context    mctx;
 static const struct socket_op_vtable offload_socket_fd_op_vtable;
 
 static K_KERNEL_STACK_DEFINE(modem_rx_stack, CONFIG_MODEM_QUECTEL_BG9X_RX_STACK_SIZE);
+#if 0
 static K_KERNEL_STACK_DEFINE(modem_workq_stack, CONFIG_MODEM_QUECTEL_BG9X_RX_WORKQ_STACK_SIZE);
+static struct k_work_q	       modem_workq;
+#endif
 NET_BUF_POOL_DEFINE(mdm_recv_pool, MDM_RECV_MAX_BUF, MDM_RECV_BUF_SIZE, 0, NULL);
 
 static inline int digits(int n)
@@ -892,12 +894,14 @@ static void modem_rssi_query_work(struct k_work *work)
 		LOG_ERR("AT+CSQ ret:%d", ret);
 	}
 
+#if 0
 	/* Re-start RSSI query work */
 	if (work) {
 		k_delayed_work_submit_to_queue(&modem_workq,
 					       &mdata.rssi_query_work,
 					       K_SECONDS(RSSI_TIMEOUT_SECS));
 	}
+#endif
 }
 
 /* Func: pin_init
@@ -976,8 +980,10 @@ restart:
 
 	counter = 0;
 
+#if 0
 	/* stop RSSI delay work */
 	k_delayed_work_cancel(&mdata.rssi_query_work);
+#endif
 
 	/* Let the modem respond. */
 	LOG_INF("Waiting for modem to respond");
@@ -1026,14 +1032,28 @@ restart_rssi:
 
 	/* Network is ready - Start RSSI work in the background. */
 	LOG_INF("Network is ready.");
+#if 0
 	k_delayed_work_submit_to_queue(&modem_workq,
 				       &mdata.rssi_query_work,
 				       K_SECONDS(RSSI_TIMEOUT_SECS));
-
+#endif
 	/* Once the network is ready, activate PDP context. */
 	ret = modem_cmd_send(&mctx.iface, &mctx.cmd_handler,
 			     NULL, 0U, "AT+QIACT=1", &mdata.sem_response,
 			     MDM_CMD_TIMEOUT);
+
+	/* If the PDP context is already opened ; it returns an error. 
+	In this case, close the context and reopens it. */
+	if(ret == -EIO){
+		ret = modem_cmd_send(&mctx.iface, &mctx.cmd_handler,
+		     NULL, 0U, "AT+QIDEACT=1", &mdata.sem_response,
+		     MDM_CMD_TIMEOUT); 
+
+		ret = modem_cmd_send(&mctx.iface, &mctx.cmd_handler,
+		     NULL, 0U, "AT+QIACT=1", &mdata.sem_response,
+		     MDM_CMD_TIMEOUT); 
+	}
+
 
 	/* Retry or Possibly Exit. */
 	if (ret < 0 && init_retry_count++ < MDM_INIT_RETRY_COUNT) {
@@ -1106,9 +1126,11 @@ static int modem_init(const struct device *dev)
 	k_sem_init(&mdata.sem_response,	 0, 1);
 	k_sem_init(&mdata.sem_tx_ready,	 0, 1);
 	k_sem_init(&mdata.sem_sock_conn, 0, 1);
+#if 0
 	k_work_q_start(&modem_workq, modem_workq_stack,
 		       K_KERNEL_STACK_SIZEOF(modem_workq_stack),
 		       K_PRIO_COOP(7));
+#endif
 
 	/* socket config */
 	mdata.socket_config.sockets	    = &mdata.sockets[0];
@@ -1171,7 +1193,9 @@ static int modem_init(const struct device *dev)
 			NULL, NULL, NULL, K_PRIO_COOP(7), 0, K_NO_WAIT);
 
 	/* Init RSSI query */
+#if 0
 	k_delayed_work_init(&mdata.rssi_query_work, modem_rssi_query_work);
+#endif
 	return modem_setup();
 
 error:
